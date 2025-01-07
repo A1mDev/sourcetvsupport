@@ -54,6 +54,8 @@ CDetour* CSteam3Server::detour_NotifyClientDisconnect = NULL;
 int CFrameSnapshotManager::offset_m_PackedEntitiesPool = 0;
 void* CFrameSnapshotManager::pfn_LevelChanged = NULL;
 CDetour* CFrameSnapshotManager::detour_LevelChanged = NULL;
+void* CBaseAbility::pfn_ShouldTransmit = NULL;
+CDetour* CBaseAbility::detour_ShouldTransmit = NULL;
 
 int shookid_CHLTVDemoRecorder_RecordStringTables = 0;
 int shookid_CHLTVDemoRecorder_RecordServerClasses = 0;
@@ -106,6 +108,34 @@ bool CUtlStreamBuffer::IsOpen() const
 
 SMExtension g_Extension;
 SMEXT_LINK(&g_Extension);
+
+// Bug: infected players abilities are not sent, so the cooldown of abilities in versus-like modes is not visible in the HUD below. 
+// This is also relevant for spectators.
+DETOUR_DECL_MEMBER1(Handler_CBaseAbility__ShouldTransmit, int, const CCheckTransmitInfo*, pInfo)
+{
+	int iReturn = DETOUR_MEMBER_CALL(Handler_CBaseAbility__ShouldTransmit)(pInfo);
+
+	if (iReturn == FL_EDICT_ALWAYS) {
+		return iReturn;
+	}
+
+	IGamePlayer* pPlayer = playerhelpers->GetGamePlayer(pInfo->m_pClientEnt);
+	if (pPlayer == NULL) {
+		return iReturn;
+	}
+
+	IPlayerInfo* pPInfo = pPlayer->GetPlayerInfo();
+	if (pPInfo == NULL) {
+		return iReturn;
+	}
+
+	/* We send to spectators and SourceTV */
+	if (pPlayer->IsSourceTV() || pPInfo->GetTeamIndex() == TEAM_SPECTATOR) {
+		return FL_EDICT_ALWAYS;
+	}
+
+	return iReturn;
+}
 
 // bug#X: hltv clients are sending "player_full_connect" event
 // user ids of hltv clients can collide with user ids of sv
@@ -296,6 +326,7 @@ void SMExtension::Load()
 		return;
 	}
 
+	CBaseAbility::detour_ShouldTransmit->EnableDetour();
 	CBaseServer::detour_IsExclusiveToLobbyConnections->EnableDetour();
 	CSteam3Server::detour_NotifyClientDisconnect->EnableDetour();
 	CHLTVServer::detour_AddNewFrame->EnableDetour();
@@ -326,6 +357,11 @@ void SMExtension::Load()
 
 void SMExtension::Unload()
 {
+	if (CBaseAbility::detour_ShouldTransmit) {
+		CBaseAbility::detour_ShouldTransmit->Destroy();
+		CBaseAbility::detour_ShouldTransmit = NULL;
+	}
+
 	if (CBaseServer::vcall_GetChallengeNr != NULL) {
 		CBaseServer::vcall_GetChallengeNr->Destroy();
 		CBaseServer::vcall_GetChallengeNr = NULL;
@@ -417,9 +453,9 @@ bool SMExtension::SetupFromGameConfig(IGameConfig* gc, char* error, int maxlengt
 		{ "CBaseServer::ReplyChallenge", CBaseServer::vtblindex_ReplyChallenge },
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 		{ "CBaseServer::FillServerInfo", CBaseServer::vtblindex_FillServerInfo },
-#if !defined _WIN32
+	#if !defined _WIN32
 		{ "CHLTVServer::FillServerInfo", CHLTVServer::vtblindex_FillServerInfo },
-#endif
+	#endif
 #endif
 		{ "CBaseClient::m_SteamID", CBaseClient::offset_m_SteamID },
 		{ "CBaseServer::ConnectClient", CBaseServer::vtblindex_ConnectClient },
@@ -445,6 +481,7 @@ bool SMExtension::SetupFromGameConfig(IGameConfig* gc, char* error, int maxlengt
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 		{ "CBaseClient::SendFullConnectEvent", CBaseClient::pfn_SendFullConnectEvent },
 #endif
+		{ "CBaseAbility::ShouldTransmit", CBaseAbility::pfn_ShouldTransmit },
 #ifdef TV_RELAYTEST
 		{ "OpenSocketInternal", pfn_OpenSocketInternal },
 #endif
@@ -556,6 +593,13 @@ bool SMExtension::CreateDetours(char* error, size_t maxlength)
 	CFrameSnapshotManager::detour_LevelChanged = DETOUR_CREATE_MEMBER(Handler_CFrameSnapshotManager_LevelChanged, CFrameSnapshotManager::pfn_LevelChanged);
 	if (CFrameSnapshotManager::detour_LevelChanged == NULL) {
 		ke::SafeStrcpy(error, maxlength, "Unable to create a detour for \"CFrameSnapshotManager::LevelChanged\"");
+
+		return false;
+	}
+
+	CBaseAbility::detour_ShouldTransmit = DETOUR_CREATE_MEMBER(Handler_CBaseAbility__ShouldTransmit, CBaseAbility::pfn_ShouldTransmit);
+	if (CBaseAbility::detour_ShouldTransmit == NULL) {
+		ke::SafeStrcpy(error, maxlength, "Unable to create a detour for \"CBaseAbility::ShouldTransmit\"");
 
 		return false;
 	}

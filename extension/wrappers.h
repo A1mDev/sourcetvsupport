@@ -265,6 +265,14 @@ public:
 	}
 };
 
+class CBaseAbility :
+	public CBaseEntity
+{
+public:
+	static void* pfn_ShouldTransmit;
+	static CDetour* detour_ShouldTransmit;
+};
+
 class CBasePlayer :
 	public CBaseEntity
 {
